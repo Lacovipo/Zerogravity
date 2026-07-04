@@ -1,7 +1,7 @@
 // src/evaluation.rs
 // Static evaluation function for ZeroGravity
 use crate::board::{
-    Board, WHITE, PAWN, QUEEN, KING, WHITE_PAWN, WHITE_BISHOP, BLACK_PAWN, BLACK_BISHOP
+    Board, WHITE, BLACK, PAWN, QUEEN, KING, WHITE_PAWN, WHITE_BISHOP, BLACK_PAWN, BLACK_BISHOP
 };
 use std::sync::OnceLock;
 
@@ -162,10 +162,7 @@ fn get_passed_pawn_masks_black() -> &'static [u64; 64] {
 }
 
 pub fn evaluate(board: &Board, _use_mobility: bool) -> i32 {
-    let mut white_score = 0_i32;
-    let mut black_score = 0_i32;
-
-    // Calculate game phase
+    // Calculate game phase and check if it is a pawn ending
     let w_knights = board.pieces[crate::board::WHITE_KNIGHT].count_ones() as i32;
     let b_knights = board.pieces[crate::board::BLACK_KNIGHT].count_ones() as i32;
     let w_bishops = board.pieces[crate::board::WHITE_BISHOP].count_ones() as i32;
@@ -174,6 +171,14 @@ pub fn evaluate(board: &Board, _use_mobility: bool) -> i32 {
     let b_rooks = board.pieces[crate::board::BLACK_ROOK].count_ones() as i32;
     let w_queens = board.pieces[crate::board::WHITE_QUEEN].count_ones() as i32;
     let b_queens = board.pieces[crate::board::BLACK_QUEEN].count_ones() as i32;
+
+    let is_pawn_ending = (w_knights | b_knights | w_bishops | b_bishops | w_rooks | b_rooks | w_queens | b_queens) == 0;
+    if is_pawn_ending {
+        return evaluate_pawn_ending(board);
+    }
+
+    let mut white_score = 0_i32;
+    let mut black_score = 0_i32;
 
     let mut phase = (w_knights + b_knights) * 1 + (w_bishops + b_bishops) * 1 + (w_rooks + b_rooks) * 2 + (w_queens + b_queens) * 4;
     if phase > 24 {
@@ -455,6 +460,236 @@ pub fn evaluate(board: &Board, _use_mobility: bool) -> i32 {
     black_score += b_mobility;
 
     // Base score relative to side to move
+    if board.side_to_move == WHITE {
+        white_score - black_score
+    } else {
+        black_score - white_score
+    }
+}
+
+fn chebyshev_distance(sq1: u8, sq2: u8) -> i32 {
+    let f1 = sq1 % 8;
+    let r1 = sq1 / 8;
+    let f2 = sq2 % 8;
+    let r2 = sq2 / 8;
+    std::cmp::max((f1 as i32 - f2 as i32).abs(), (r1 as i32 - r2 as i32).abs())
+}
+
+fn king_centralization_bonus(sq: u8) -> i32 {
+    let f = sq % 8;
+    let r = sq / 8;
+    let file_dist = (2 * (f as i32) - 7).abs();
+    let rank_dist = (2 * (r as i32) - 7).abs();
+    let center_dist = std::cmp::max(file_dist, rank_dist);
+    (7 - center_dist) * 4
+}
+
+fn evaluate_pawn_ending(board: &Board) -> i32 {
+    let w_pawns = board.pieces[crate::board::WHITE_PAWN];
+    let b_pawns = board.pieces[crate::board::BLACK_PAWN];
+
+    // King vs King draw check
+    if w_pawns == 0 && b_pawns == 0 {
+        return 0;
+    }
+
+    let mut white_score = 0_i32;
+    let mut black_score = 0_i32;
+
+    let w_king_bb = board.pieces[crate::board::WHITE_KING];
+    let b_king_bb = board.pieces[crate::board::BLACK_KING];
+    
+    // Guard against missing kings in illegal/test positions
+    if w_king_bb == 0 || b_king_bb == 0 {
+        return 0;
+    }
+
+    let w_king_sq = w_king_bb.trailing_zeros() as u8;
+    let b_king_sq = b_king_bb.trailing_zeros() as u8;
+
+    // 1. King Centralization
+    white_score += king_centralization_bonus(w_king_sq);
+    black_score += king_centralization_bonus(b_king_sq);
+
+    // 2. Direct Opposition
+    let w_f = w_king_sq % 8;
+    let w_r = w_king_sq / 8;
+    let b_f = b_king_sq % 8;
+    let b_r = b_king_sq / 8;
+    let file_dist = (w_f as i32 - b_f as i32).abs();
+    let rank_dist = (w_r as i32 - b_r as i32).abs();
+    if (file_dist == 0 && rank_dist == 2) || (rank_dist == 0 && file_dist == 2) {
+        if board.side_to_move == WHITE {
+            black_score += 30; // Black has opposition
+        } else {
+            white_score += 30; // White has opposition
+        }
+    }
+
+    // 3. Pawn material, structure and quality
+    let file_masks = get_file_masks();
+    let passed_masks_w = get_passed_pawn_masks_white();
+    let passed_masks_b = get_passed_pawn_masks_black();
+
+    // White pawns
+    let mut temp_w = w_pawns;
+    while temp_w != 0 {
+        let sq = temp_w.trailing_zeros() as u8;
+        let r = sq / 8;
+        let f = sq % 8;
+
+        white_score += 100; // Base material
+
+        // King proximity (defense)
+        let dist_to_king = chebyshev_distance(w_king_sq, sq);
+        white_score += (8 - dist_to_king) * 5;
+
+        // Enemy king proximity (safety/distance)
+        let dist_to_enemy_king = chebyshev_distance(b_king_sq, sq);
+        white_score -= (8 - dist_to_enemy_king) * 5;
+
+        // Passed pawn check
+        if (b_pawns & passed_masks_w[sq as usize]) == 0 {
+            let mut passed_bonus = 50 + 15 * r as i32;
+
+            // Protected passed pawn check
+            let left_defender = f > 0 && (w_pawns & (1_u64 << (sq - 9))) != 0;
+            let right_defender = f < 7 && (w_pawns & (1_u64 << (sq - 7))) != 0;
+            if left_defender || right_defender {
+                passed_bonus += 150;
+            }
+
+            // Outside passed pawn check
+            let mut is_outside = true;
+            let mut other_pawns = (w_pawns | b_pawns) & !(1_u64 << sq);
+            while other_pawns != 0 {
+                let other_sq = other_pawns.trailing_zeros() as u8;
+                let other_f = other_sq % 8;
+                if (other_f as i32 - f as i32).abs() < 2 {
+                    is_outside = false;
+                    break;
+                }
+                other_pawns &= other_pawns - 1;
+            }
+            if is_outside {
+                passed_bonus += 120;
+            }
+
+            // Rule of the square check
+            let d = 7 - r as i32;
+            let d_eff = if r == 1 { 5 } else { d };
+            let king_dist_to_promo = std::cmp::max((7 - b_r as i32).abs(), (f as i32 - b_f as i32).abs());
+            let limit = if board.side_to_move == WHITE { d_eff - 1 } else { d_eff };
+            if king_dist_to_promo > limit {
+                let file_mask = file_masks[f as usize];
+                let rank_mask_white = !((1_u64 << ((r + 1) * 8)) - 1);
+                let front_mask = file_mask & rank_mask_white;
+                if (board.occupied() & front_mask) == 0 {
+                    passed_bonus += 800; // Unstoppable!
+                }
+            }
+
+            white_score += passed_bonus;
+        }
+
+        temp_w &= temp_w - 1;
+    }
+
+    // Black pawns
+    let mut temp_b = b_pawns;
+    while temp_b != 0 {
+        let sq = temp_b.trailing_zeros() as u8;
+        let r = sq / 8;
+        let f = sq % 8;
+
+        black_score += 100; // Base material
+
+        // King proximity (defense)
+        let dist_to_king = chebyshev_distance(b_king_sq, sq);
+        black_score += (8 - dist_to_king) * 5;
+
+        // Enemy king proximity (safety/distance)
+        let dist_to_enemy_king = chebyshev_distance(w_king_sq, sq);
+        black_score -= (8 - dist_to_enemy_king) * 5;
+
+        // Passed pawn check
+        if (w_pawns & passed_masks_b[sq as usize]) == 0 {
+            let mut passed_bonus = 50 + 15 * (7 - r as i32);
+
+            // Protected passed pawn check
+            let left_defender = f > 0 && (b_pawns & (1_u64 << (sq + 7))) != 0;
+            let right_defender = f < 7 && (b_pawns & (1_u64 << (sq + 9))) != 0;
+            if left_defender || right_defender {
+                passed_bonus += 150;
+            }
+
+            // Outside passed pawn check
+            let mut is_outside = true;
+            let mut other_pawns = (w_pawns | b_pawns) & !(1_u64 << sq);
+            while other_pawns != 0 {
+                let other_sq = other_pawns.trailing_zeros() as u8;
+                let other_f = other_sq % 8;
+                if (other_f as i32 - f as i32).abs() < 2 {
+                    is_outside = false;
+                    break;
+                }
+                other_pawns &= other_pawns - 1;
+            }
+            if is_outside {
+                passed_bonus += 120;
+            }
+
+            // Rule of the square check
+            let d = r as i32;
+            let d_eff = if r == 6 { 5 } else { d };
+            let king_dist_to_promo = std::cmp::max((w_r as i32).abs(), (f as i32 - w_f as i32).abs());
+            let limit = if board.side_to_move == BLACK { d_eff - 1 } else { d_eff };
+            if king_dist_to_promo > limit {
+                let file_mask = file_masks[f as usize];
+                let rank_mask_black = (1_u64 << (r * 8)) - 1;
+                let front_mask = file_mask & rank_mask_black;
+                if (board.occupied() & front_mask) == 0 {
+                    passed_bonus += 800; // Unstoppable!
+                }
+            }
+
+            black_score += passed_bonus;
+        }
+
+        temp_b &= temp_b - 1;
+    }
+
+    // 4. Doubled pawns penalty
+    for f in 0..8 {
+        let w_count = (w_pawns & file_masks[f]).count_ones() as i32;
+        if w_count > 1 {
+            white_score -= 20 * (w_count - 1);
+        }
+        let b_count = (b_pawns & file_masks[f]).count_ones() as i32;
+        if b_count > 1 {
+            black_score -= 20 * (b_count - 1);
+        }
+    }
+
+    // 5. King proximity to enemy pawns (offensive)
+    // White king attacking black pawns
+    let mut temp_b_att = b_pawns;
+    while temp_b_att != 0 {
+        let sq = temp_b_att.trailing_zeros() as u8;
+        let dist = chebyshev_distance(w_king_sq, sq);
+        white_score += (8 - dist) * 10;
+        temp_b_att &= temp_b_att - 1;
+    }
+
+    // Black king attacking white pawns
+    let mut temp_w_att = w_pawns;
+    while temp_w_att != 0 {
+        let sq = temp_w_att.trailing_zeros() as u8;
+        let dist = chebyshev_distance(b_king_sq, sq);
+        black_score += (8 - dist) * 10;
+        temp_w_att &= temp_w_att - 1;
+    }
+
     if board.side_to_move == WHITE {
         white_score - black_score
     } else {

@@ -138,7 +138,7 @@ fn main() {
     let mut tt = TranspositionTable::new(16); // 16MB table by default
     let mut history_table = [[0_i32; 64]; 64];
 
-    eprintln!("ZeroGravity Chess Engine v1.16.0 (Rust) ready.");
+    eprintln!("ZeroGravity Chess Engine v1.17.0 (Rust) ready.");
 
     // Spawn stdin reader thread to communicate via channel
     let (tx, rx) = std::sync::mpsc::channel();
@@ -171,7 +171,7 @@ fn main() {
 
         match cmd {
             "uci" => {
-                println!("id name ZeroGravity v1.16.0");
+                println!("id name ZeroGravity v1.17.0");
                 println!("id author Antigravity");
                 println!("uciok");
             }
@@ -252,5 +252,42 @@ mod tests {
         let best = search(&mut b, 3, 0.0, &mut tt, &mut history, &rx);
         assert!(best.is_some());
         assert_eq!(best.unwrap().to_uci(), "f3f7");
+    }
+
+    #[test]
+    fn test_pawn_ending_draw() {
+        let mut b = Board::new();
+        // King vs King: draw evaluation should be exactly 0
+        b.load_fen("k7/8/8/8/8/8/8/K7 w - - 0 1");
+        let eval = super::evaluation::evaluate(&b, false);
+        assert_eq!(eval, 0);
+    }
+
+    #[test]
+    fn test_unstoppable_passed_pawn() {
+        let mut b = Board::new();
+        // Pawn at a2, White king at a1, Black king at h8. White to move.
+        // The black king is too far (Chebyshev dist 7 > 4) so the pawn is unstoppable.
+        b.load_fen("7k/8/8/8/8/8/P7/K7 w - - 0 1");
+        let eval = super::evaluation::evaluate(&b, false);
+        // Should have a huge score (over 1000) due to unstoppable bonus (+800)
+        assert!(eval > 1000);
+    }
+
+    #[test]
+    fn test_protected_passed_pawn() {
+        let mut b1 = Board::new();
+        let mut b2 = Board::new();
+        
+        // b1: White passed pawn at d5, supported by c4.
+        b1.load_fen("k7/7p/6p1/3P4/2P5/8/8/K7 w - - 0 1");
+        let eval_protected = super::evaluation::evaluate(&b1, false);
+
+        // b2: White passed pawn at d5, unsupported by c3 (c3 does not defend d5).
+        b2.load_fen("k7/7p/6p1/3P4/8/2P5/8/K7 w - - 0 1");
+        let eval_unprotected = super::evaluation::evaluate(&b2, false);
+
+        // The protected passed pawn position should evaluate significantly higher
+        assert!(eval_protected > eval_unprotected);
     }
 }
