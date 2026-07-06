@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 use std::time::Instant;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::board::{
     Board, Move, WHITE, WHITE_KING, BLACK_KING,
     bit_scan_forward
@@ -30,82 +32,103 @@ pub struct TTEntry {
 }
 
 pub struct TranspositionTable {
-    pub entries: Vec<Option<TTEntry>>,
+    pub entries: Vec<std::cell::UnsafeCell<Option<TTEntry>>>,
 }
+
+unsafe impl Sync for TranspositionTable {}
+unsafe impl Send for TranspositionTable {}
 
 impl TranspositionTable {
     pub fn new(megabytes: usize) -> Self {
-        let size = (megabytes * 1024 * 1024) / std::mem::size_of::<Option<TTEntry>>();
+        let size = (megabytes * 1024 * 1024) / std::mem::size_of::<std::cell::UnsafeCell<Option<TTEntry>>>();
         let size = size.next_power_of_two();
-        TranspositionTable {
-            entries: vec![None; size],
+        let mut entries = Vec::with_capacity(size);
+        for _ in 0..size {
+            entries.push(std::cell::UnsafeCell::new(None));
         }
+        TranspositionTable { entries }
     }
 
     pub fn get(&self, hash: u64) -> Option<TTEntry> {
         let index = (hash as usize) & (self.entries.len() - 1);
-        if let Some(entry) = self.entries[index] {
-            if entry.hash == hash {
-                return Some(entry);
+        unsafe {
+            if let Some(entry) = *self.entries[index].get() {
+                if entry.hash == hash {
+                    return Some(entry);
+                }
             }
         }
         None
     }
 
-    pub fn store(&mut self, hash: u64, depth: i32, flag: u8, val: i32, best_move: Option<Move>) {
+    pub fn store(&self, hash: u64, depth: i32, flag: u8, val: i32, best_move: Option<Move>) {
         let index = (hash as usize) & (self.entries.len() - 1);
-        let replace = match self.entries[index] {
-            None => true,
-            Some(entry) => entry.depth <= depth,
-        };
-        if replace {
-            self.entries[index] = Some(TTEntry {
-                hash,
-                depth,
-                flag,
-                val,
-                best_move,
-            });
+        unsafe {
+            let entry_ptr = self.entries[index].get();
+            let replace = match *entry_ptr {
+                None => true,
+                Some(entry) => entry.depth <= depth,
+            };
+            if replace {
+                *entry_ptr = Some(TTEntry {
+                    hash,
+                    depth,
+                    flag,
+                    val,
+                    best_move,
+                });
+            }
         }
     }
 
-    pub fn clear(&mut self) {
-        for entry in self.entries.iter_mut() {
-            *entry = None;
+    pub fn clear(&self) {
+        for entry in self.entries.iter() {
+            unsafe {
+                *entry.get() = None;
+            }
         }
     }
 }
 
+pub struct ThreadSafeReceiver(pub std::sync::mpsc::Receiver<String>);
+unsafe impl Sync for ThreadSafeReceiver {}
+unsafe impl Send for ThreadSafeReceiver {}
+
 pub struct SearchState<'a> {
     pub start_time: Instant,
     pub time_limit: f64, // in seconds, 0.0 means no limit
-    pub stop_search: bool,
+    pub stop_search: Arc<AtomicBool>,
+    pub is_main: bool,
     pub nodes_searched: u64,
     pub killer_moves: [[Option<Move>; 2]; MAX_PLY],
     pub history_table: &'a mut [[i32; 64]; 64],
     pub lmr_table: [[i32; 64]; 64],
     pub eval_history: [i32; MAX_PLY],
-    pub tt: &'a mut TranspositionTable,
-    pub rx: &'a std::sync::mpsc::Receiver<String>,
+    pub tt: &'a TranspositionTable,
+    pub rx: &'a ThreadSafeReceiver,
 }
 
 impl<'a> SearchState<'a> {
     pub fn time_up(&mut self) -> bool {
-        if self.stop_search {
+        if self.stop_search.load(Ordering::Relaxed) {
             return true;
         }
         if (self.nodes_searched & 2047) == 0 {
-            while let Ok(cmd) = self.rx.try_recv() {
-                let trimmed = cmd.trim();
-                if trimmed == "stop" || trimmed == "quit" {
-                    self.stop_search = true;
-                    return true;
+            if self.is_main {
+                while let Ok(cmd) = self.rx.0.try_recv() {
+                    let trimmed = cmd.trim();
+                    if trimmed == "stop" || trimmed == "quit" {
+                        self.stop_search.store(true, Ordering::Relaxed);
+                        return true;
+                    } else if trimmed == "isready" {
+                        println!("readyok");
+                    }
                 }
             }
             if self.time_limit > 0.0 {
                 let elapsed = self.start_time.elapsed().as_secs_f64();
                 if elapsed >= self.time_limit {
-                    self.stop_search = true;
+                    self.stop_search.store(true, Ordering::Relaxed);
                     return true;
                 }
             }
@@ -169,6 +192,10 @@ pub fn quiescence(board: &mut Board, mut alpha: i32, beta: i32, ply: i32, state:
         return 0;
     }
 
+    if board.is_insufficient_material() || board.halfmove_clock >= 100 {
+        return 0;
+    }
+
     // Check if we are in check
     let us = board.side_to_move;
     let them = 1 - us;
@@ -225,6 +252,10 @@ pub fn quiescence(board: &mut Board, mut alpha: i32, beta: i32, ply: i32, state:
 }
 
 pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: usize, state: &mut SearchState) -> i32 {
+    if ply >= MAX_PLY - 1 {
+        return evaluate(board, false);
+    }
+
     state.nodes_searched += 1;
 
     if state.time_up() {
@@ -241,7 +272,7 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
         false
     };
 
-    if board.halfmove_clock >= 100 {
+    if board.halfmove_clock >= 100 || board.is_insufficient_material() {
         return 0;
     }
 
@@ -462,7 +493,7 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
     }
 
     // 6. Store in Transposition Table (if search was not aborted)
-    if !state.stop_search {
+    if !state.stop_search.load(Ordering::Relaxed) {
         let tt_flag = if best_val <= alpha_orig {
             ALPHA
         } else if best_val >= beta {
@@ -506,9 +537,10 @@ pub fn search(
     board: &mut Board,
     max_depth: i32,
     search_time: f64,
-    tt: &mut TranspositionTable,
+    tt: &TranspositionTable,
     history_table: &mut [[i32; 64]; 64],
-    rx: &std::sync::mpsc::Receiver<String>,
+    rx: &ThreadSafeReceiver,
+    num_threads: usize,
 ) -> Option<Move> {
     // Decay history table by dividing by 2 to prevent overflow and age old moves
     for r in 0..64 {
@@ -524,82 +556,120 @@ pub fn search(
         }
     }
 
-    let mut state = SearchState {
-        start_time: Instant::now(),
-        time_limit: search_time,
-        stop_search: false,
-        nodes_searched: 0,
-        killer_moves: [[None; 2]; MAX_PLY],
-        history_table,
-        lmr_table,
-        eval_history: [0; MAX_PLY],
-        tt,
-        rx,
-    };
-
+    let stop_search = Arc::new(AtomicBool::new(false));
     let mut best_move = None;
-    let mut previous_score = 0;
 
-    for depth in 1..=max_depth {
-        let mut score;
-        if depth >= 5 {
-            let mut margin = 35;
-            let mut alpha = previous_score - margin;
-            let mut beta = previous_score + margin;
-
-            loop {
-                score = negamax(board, depth, alpha, beta, 0, &mut state);
-                if state.stop_search {
-                    break;
+    std::thread::scope(|s| {
+        // Spawn helper threads
+        for thread_id in 1..num_threads {
+            let mut local_board = board.clone();
+            let mut local_history = history_table.clone();
+            let stop_search_clone = Arc::clone(&stop_search);
+            s.spawn(move || {
+                let mut local_state = SearchState {
+                    start_time: Instant::now(),
+                    time_limit: search_time,
+                    stop_search: stop_search_clone,
+                    is_main: false,
+                    nodes_searched: 0,
+                    killer_moves: [[None; 2]; MAX_PLY],
+                    history_table: &mut local_history,
+                    lmr_table,
+                    eval_history: [0; MAX_PLY],
+                    tt,
+                    rx,
+                };
+                for depth in 1..=max_depth {
+                    if local_state.stop_search.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let d = depth + (thread_id as i32 % 2);
+                    negamax(&mut local_board, d, -INF, INF, 0, &mut local_state);
                 }
-
-                if score <= alpha {
-                    alpha = (alpha - margin).max(-INF);
-                    margin *= 2;
-                } else if score >= beta {
-                    beta = (beta + margin).min(INF);
-                    margin *= 2;
-                } else {
-                    break;
-                }
-            }
-        } else {
-            score = negamax(board, depth, -INF, INF, 0, &mut state);
+            });
         }
 
-        if state.stop_search {
-            break;
-        }
-
-        previous_score = score;
-
-        let elapsed = state.start_time.elapsed().as_secs_f64();
-        let nps = if elapsed > 0.0 { state.nodes_searched as f64 / elapsed } else { 0.0 };
-
-        let pv = get_pv_line(board, depth, &state.tt);
-        let pv_str = pv.iter().map(|m| m.to_uci()).collect::<Vec<String>>().join(" ");
-
-        let score_str = if score > MATE_SCORE - 100 {
-            let mate_in_ply = MATE_SCORE - score;
-            let mate_in_moves = (mate_in_ply + 1) / 2;
-            format!("mate {}", mate_in_moves)
-        } else if score < -MATE_SCORE + 100 {
-            let mate_in_ply = MATE_SCORE + score;
-            let mate_in_moves = (mate_in_ply + 1) / 2;
-            format!("mate -{}", mate_in_moves)
-        } else {
-            format!("cp {}", score)
+        // Main thread search
+        let mut state = SearchState {
+            start_time: Instant::now(),
+            time_limit: search_time,
+            stop_search: Arc::clone(&stop_search),
+            is_main: true,
+            nodes_searched: 0,
+            killer_moves: [[None; 2]; MAX_PLY],
+            history_table,
+            lmr_table,
+            eval_history: [0; MAX_PLY],
+            tt,
+            rx,
         };
 
-        println!(
-            "info depth {} score {} time {} nodes {} nps {} pv {}",
-            depth, score_str, (elapsed * 1000.0) as u64, state.nodes_searched, nps as u64, pv_str
-        );
+        let mut previous_score = 0;
 
-        if !pv.is_empty() {
-            best_move = Some(pv[0]);
+        for depth in 1..=max_depth {
+            let mut score;
+            if depth >= 5 {
+                let mut margin = 35;
+                let mut alpha = previous_score - margin;
+                let mut beta = previous_score + margin;
+
+                loop {
+                    score = negamax(board, depth, alpha, beta, 0, &mut state);
+                    if state.stop_search.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    if score <= alpha {
+                        alpha = (alpha - margin).max(-INF);
+                        margin *= 2;
+                    } else if score >= beta {
+                        beta = (beta + margin).min(INF);
+                        margin *= 2;
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                score = negamax(board, depth, -INF, INF, 0, &mut state);
+            }
+
+            if state.stop_search.load(Ordering::Relaxed) {
+                break;
+            }
+
+            previous_score = score;
+
+            let elapsed = state.start_time.elapsed().as_secs_f64();
+            let nps = if elapsed > 0.0 { state.nodes_searched as f64 / elapsed } else { 0.0 };
+
+            let pv = get_pv_line(board, depth, &state.tt);
+            let pv_str = pv.iter().map(|m| m.to_uci()).collect::<Vec<String>>().join(" ");
+
+            let score_str = if score > MATE_SCORE - 100 {
+                let mate_in_ply = MATE_SCORE - score;
+                let mate_in_moves = (mate_in_ply + 1) / 2;
+                format!("mate {}", mate_in_moves)
+            } else if score < -MATE_SCORE + 100 {
+                let mate_in_ply = MATE_SCORE + score;
+                let mate_in_moves = (mate_in_ply + 1) / 2;
+                format!("mate -{}", mate_in_moves)
+            } else {
+                format!("cp {}", score)
+            };
+
+            println!(
+                "info depth {} score {} time {} nodes {} nps {} pv {}",
+                depth, score_str, (elapsed * 1000.0) as u64, state.nodes_searched, nps as u64, pv_str
+            );
+
+            if !pv.is_empty() {
+                best_move = Some(pv[0]);
+            }
         }
-    }
+    });
+
+    // Make sure we stop helper threads when main thread returns
+    stop_search.store(true, Ordering::Relaxed);
 
     if best_move.is_none() {
         let moves = generate_legal_moves(board);

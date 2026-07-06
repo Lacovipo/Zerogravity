@@ -10,7 +10,7 @@ mod search;
 use std::io::{self, BufRead};
 use board::{Board, WHITE};
 use movegen::generate_legal_moves;
-use search::{search, TranspositionTable};
+use search::{search, TranspositionTable, ThreadSafeReceiver};
 
 fn parse_position(parts: &[&str], board: &mut Board) {
     if parts.len() < 2 {
@@ -137,11 +137,13 @@ fn main() {
     let mut board = Board::new();
     let mut tt = TranspositionTable::new(16); // 16MB table by default
     let mut history_table = [[0_i32; 64]; 64];
+    let mut num_threads = 1;
 
-    eprintln!("ZeroGravity Chess Engine v1.17.0 (Rust) ready.");
+    eprintln!("ZeroGravity Chess Engine v1.18.0 (Rust) ready.");
 
     // Spawn stdin reader thread to communicate via channel
     let (tx, rx) = std::sync::mpsc::channel();
+    let rx = ThreadSafeReceiver(rx);
     std::thread::spawn(move || {
         let stdin = io::stdin();
         for line_res in stdin.lock().lines() {
@@ -156,7 +158,7 @@ fn main() {
     });
 
     // Main UCI command processing loop
-    while let Ok(line) = rx.recv() {
+    while let Ok(line) = rx.0.recv() {
         let line_trimmed = line.trim();
         if line_trimmed.is_empty() {
             continue;
@@ -171,12 +173,35 @@ fn main() {
 
         match cmd {
             "uci" => {
-                println!("id name ZeroGravity v1.17.0");
+                println!("id name ZeroGravity v1.18.0");
                 println!("id author Antigravity");
+                println!("option name Hash type spin default 16 min 1 max 1024");
+                println!("option name Threads type spin default 1 min 1 max 128");
                 println!("uciok");
             }
             "isready" => {
                 println!("readyok");
+            }
+            "setoption" => {
+                if parts.len() >= 5 && parts[1] == "name" && parts[3] == "value" {
+                    let opt_name = parts[2].to_lowercase();
+                    let opt_val = parts[4];
+                    match opt_name.as_str() {
+                        "hash" => {
+                            if let Ok(mb) = opt_val.parse::<usize>() {
+                                tt = TranspositionTable::new(mb);
+                                eprintln!("info string Hash set to {} MB", mb);
+                            }
+                        }
+                        "threads" => {
+                            if let Ok(t) = opt_val.parse::<usize>() {
+                                num_threads = t.max(1).min(128);
+                                eprintln!("info string Threads set to {}", num_threads);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             "ucinewgame" => {
                 board.clear();
@@ -190,9 +215,9 @@ fn main() {
             "go" => {
                 let (depth, search_time) = parse_go(&parts, &board);
                 // Clear any leftover messages from the channel (e.g. stop from previous searches)
-                while rx.try_recv().is_ok() {}
+                while rx.0.try_recv().is_ok() {}
 
-                let best = search(&mut board, depth, search_time, &mut tt, &mut history_table, &rx);
+                let best = search(&mut board, depth, search_time, &tt, &mut history_table, &rx, num_threads);
                 if let Some(m) = best {
                     println!("bestmove {}", m.to_uci());
                 }
@@ -209,7 +234,7 @@ fn main() {
 mod tests {
     use super::board::Board;
     use super::perft::perft;
-    use super::search::{search, TranspositionTable};
+    use super::search::{search, TranspositionTable, ThreadSafeReceiver};
 
     #[test]
     fn test_perft_initial() {
@@ -234,10 +259,11 @@ mod tests {
     fn test_mate_in_1() {
         let mut b = Board::new();
         b.load_fen("rnbqk1nr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2");
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let mut history = [[0; 64]; 64];
         let (_tx, rx) = std::sync::mpsc::channel();
-        let best = search(&mut b, 3, 0.0, &mut tt, &mut history, &rx);
+        let rx = ThreadSafeReceiver(rx);
+        let best = search(&mut b, 3, 0.0, &tt, &mut history, &rx, 1);
         assert!(best.is_some());
         assert_eq!(best.unwrap().to_uci(), "d8h4");
     }
@@ -246,10 +272,11 @@ mod tests {
     fn test_scholars_mate() {
         let mut b = Board::new();
         b.load_fen("r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 4 4");
-        let mut tt = TranspositionTable::new(1);
+        let tt = TranspositionTable::new(1);
         let mut history = [[0; 64]; 64];
         let (_tx, rx) = std::sync::mpsc::channel();
-        let best = search(&mut b, 3, 0.0, &mut tt, &mut history, &rx);
+        let rx = ThreadSafeReceiver(rx);
+        let best = search(&mut b, 3, 0.0, &tt, &mut history, &rx, 1);
         assert!(best.is_some());
         assert_eq!(best.unwrap().to_uci(), "f3f7");
     }
@@ -289,5 +316,40 @@ mod tests {
 
         // The protected passed pawn position should evaluate significantly higher
         assert!(eval_protected > eval_unprotected);
+    }
+
+    #[test]
+    fn test_insufficient_material() {
+        let mut b = Board::new();
+
+        // 1. King vs King
+        b.load_fen("k7/8/8/8/8/8/8/K7 w - - 0 1");
+        assert!(b.is_insufficient_material());
+
+        // 2. King + Knight vs King
+        b.load_fen("k7/8/8/8/8/8/8/K1N5 w - - 0 1");
+        assert!(b.is_insufficient_material());
+        b.load_fen("k1n5/8/8/8/8/8/8/K7 w - - 0 1");
+        assert!(b.is_insufficient_material());
+
+        // 3. King + Bishop vs King
+        b.load_fen("k7/8/8/8/8/8/8/K1B5 w - - 0 1");
+        assert!(b.is_insufficient_material());
+        b.load_fen("k1b5/8/8/8/8/8/8/K7 w - - 0 1");
+        assert!(b.is_insufficient_material());
+
+        // 4. King + Bishop vs King + Bishop (same color squares)
+        // c1 (dark) and f8 (dark)
+        b.load_fen("k4b2/8/8/8/8/8/8/K1B5 w - - 0 1");
+        assert!(b.is_insufficient_material());
+
+        // 5. King + Bishop vs King + Bishop (different color squares)
+        // c1 (dark) and c8 (light)
+        b.load_fen("k1b5/8/8/8/8/8/8/K1B5 w - - 0 1");
+        assert!(!b.is_insufficient_material());
+
+        // 6. King + Pawn vs King (not draw by insufficient material)
+        b.load_fen("k7/8/8/8/8/8/P7/K7 w - - 0 1");
+        assert!(!b.is_insufficient_material());
     }
 }

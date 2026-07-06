@@ -143,7 +143,7 @@ pub fn square_to_str(sq: Option<u8>) -> String {
 pub struct Move {
     pub from_sq: u8,
     pub to_sq: u8,
-    pub promotion: Option<usize>, // None, KNIGHT (1), BISHOP (2), ROOK (3), QUEEN (4)
+    pub promotion: Option<u8>, // None, KNIGHT (1), BISHOP (2), ROOK (3), QUEEN (4)
     pub is_capture: bool,
     pub is_en_passant: bool,
     pub is_double_push: bool,
@@ -153,10 +153,10 @@ pub struct Move {
 impl Move {
     pub fn to_uci(&self) -> String {
         let p_char = match self.promotion {
-            Some(KNIGHT) => "n",
-            Some(BISHOP) => "b",
-            Some(ROOK) => "r",
-            Some(QUEEN) => "q",
+            Some(1) => "n",
+            Some(2) => "b",
+            Some(3) => "r",
+            Some(4) => "q",
             _ => "",
         };
         format!("{}{}{}", square_to_str(Some(self.from_sq)), square_to_str(Some(self.to_sq)), p_char)
@@ -205,6 +205,50 @@ impl Board {
         };
         b.load_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         b
+    }
+
+    pub fn is_insufficient_material(&self) -> bool {
+        // If there are pawns, rooks, or queens, it is not insufficient material
+        if (self.pieces[WHITE_PAWN] | self.pieces[BLACK_PAWN] |
+            self.pieces[WHITE_ROOK] | self.pieces[BLACK_ROOK] |
+            self.pieces[WHITE_QUEEN] | self.pieces[BLACK_QUEEN]) != 0 {
+            return false;
+        }
+
+        let w_knights = self.pieces[WHITE_KNIGHT].count_ones();
+        let b_knights = self.pieces[BLACK_KNIGHT].count_ones();
+        let w_bishops = self.pieces[WHITE_BISHOP].count_ones();
+        let b_bishops = self.pieces[BLACK_BISHOP].count_ones();
+
+        // 1. King vs King
+        if w_knights == 0 && b_knights == 0 && w_bishops == 0 && b_bishops == 0 {
+            return true;
+        }
+
+        // 2. King + Knight vs King
+        if (w_knights == 1 && b_knights == 0 && w_bishops == 0 && b_bishops == 0) ||
+           (w_knights == 0 && b_knights == 1 && w_bishops == 0 && b_bishops == 0) {
+            return true;
+        }
+
+        // 3. King + Bishop vs King
+        if (w_knights == 0 && b_knights == 0 && w_bishops == 1 && b_bishops == 0) ||
+           (w_knights == 0 && b_knights == 0 && w_bishops == 0 && b_bishops == 1) {
+            return true;
+        }
+
+        // 4. King + Bishop vs King + Bishop (same color squares)
+        if w_knights == 0 && b_knights == 0 && w_bishops == 1 && b_bishops == 1 {
+            let w_sq = self.pieces[WHITE_BISHOP].trailing_zeros() as u8;
+            let b_sq = self.pieces[BLACK_BISHOP].trailing_zeros() as u8;
+            let w_color = (w_sq + (w_sq / 8)) % 2;
+            let b_color = (b_sq + (b_sq / 8)) % 2;
+            if w_color == b_color {
+                return true;
+            }
+        }
+
+        false
     }
 
     #[inline(always)]
@@ -421,6 +465,73 @@ impl Board {
             hash: self.hash,
         });
 
+        let zobrist = get_zobrist();
+
+        // --- Incremental Hash Update ---
+        // 1. XOR out moving piece from from_sq
+        self.hash ^= zobrist.pieces[moving_piece][m.from_sq as usize];
+
+        // 2. XOR out captured piece if any
+        if m.is_capture {
+            let cap_piece = captured_piece.unwrap();
+            let cap_sq = if m.is_en_passant {
+                if us == WHITE { m.to_sq - 8 } else { m.to_sq + 8 }
+            } else {
+                m.to_sq
+            };
+            self.hash ^= zobrist.pieces[cap_piece][cap_sq as usize];
+        }
+
+        // 3. XOR in moving/promoted piece to to_sq
+        if let Some(promo) = m.promotion {
+            let promoted_piece = us * 6 + promo as usize;
+            self.hash ^= zobrist.pieces[promoted_piece][m.to_sq as usize];
+        } else {
+            self.hash ^= zobrist.pieces[moving_piece][m.to_sq as usize];
+        }
+
+        // 4. Handle rook in castling
+        if m.is_castling {
+            match m.to_sq {
+                6 => { // White OO (G1): White Rook from 7 to 5
+                    self.hash ^= zobrist.pieces[WHITE_ROOK][7] ^ zobrist.pieces[WHITE_ROOK][5];
+                }
+                2 => { // White OOO (C1): White Rook from 0 to 3
+                    self.hash ^= zobrist.pieces[WHITE_ROOK][0] ^ zobrist.pieces[WHITE_ROOK][3];
+                }
+                62 => { // Black OO (G8): Black Rook from 63 to 61
+                    self.hash ^= zobrist.pieces[BLACK_ROOK][63] ^ zobrist.pieces[BLACK_ROOK][61];
+                }
+                58 => { // Black OOO (C8): Black Rook from 56 to 59
+                    self.hash ^= zobrist.pieces[BLACK_ROOK][56] ^ zobrist.pieces[BLACK_ROOK][59];
+                }
+                _ => {}
+            }
+        }
+
+        // 5. XOR out old castling rights and XOR in new castling rights
+        let new_castling = self.castling_rights & CASTLE_MASK[m.from_sq as usize] & CASTLE_MASK[m.to_sq as usize];
+        self.hash ^= zobrist.castling[self.castling_rights as usize] ^ zobrist.castling[new_castling as usize];
+
+        // 6. XOR out old en passant file
+        if let Some(ep) = self.en_passant {
+            self.hash ^= zobrist.ep[(ep % 8) as usize];
+        }
+
+        // 7. XOR in new en passant file
+        let new_ep = if m.is_double_push {
+            Some(if us == WHITE { m.from_sq + 8 } else { m.from_sq - 8 })
+        } else {
+            None
+        };
+        if let Some(ep) = new_ep {
+            self.hash ^= zobrist.ep[(ep % 8) as usize];
+        }
+
+        // 8. XOR side to move
+        self.hash ^= zobrist.side;
+        // -------------------------------
+
         // Clear moving piece from its original square
         self.pieces[moving_piece] = clear_bit(self.pieces[moving_piece], m.from_sq);
 
@@ -437,7 +548,7 @@ impl Board {
 
         // Place piece on target square
         if let Some(promo) = m.promotion {
-            let promoted_piece = us * 6 + promo;
+            let promoted_piece = us * 6 + promo as usize;
             self.pieces[promoted_piece] = set_bit(self.pieces[promoted_piece], m.to_sq);
         } else if m.is_castling {
             self.pieces[moving_piece] = set_bit(self.pieces[moving_piece], m.to_sq);
@@ -466,14 +577,10 @@ impl Board {
         }
 
         // Update castling rights
-        self.castling_rights &= CASTLE_MASK[m.from_sq as usize] & CASTLE_MASK[m.to_sq as usize];
+        self.castling_rights = new_castling;
 
         // Update en passant
-        if m.is_double_push {
-            self.en_passant = Some(if us == WHITE { m.from_sq + 8 } else { m.from_sq - 8 });
-        } else {
-            self.en_passant = None;
-        }
+        self.en_passant = new_ep;
 
         // Update clocks
         if (moving_piece % 6 == PAWN) || m.is_capture {
@@ -487,7 +594,12 @@ impl Board {
         }
 
         self.side_to_move = them;
-        self.hash = self.compute_hash();
+
+        #[cfg(debug_assertions)]
+        {
+            let computed = self.compute_hash();
+            debug_assert_eq!(self.hash, computed, "Hash mismatch in make_move for move {}: incremental = {:X}, computed = {:X}", m.to_uci(), self.hash, computed);
+        }
     }
 
     pub fn unmake_move(&mut self, m: Move) {
@@ -505,7 +617,7 @@ impl Board {
 
         // Clear moved piece from to_sq
         let moved_piece = if let Some(promo) = m.promotion {
-            us * 6 + promo
+            us * 6 + promo as usize
         } else {
             hist.moving_piece
         };
@@ -561,10 +673,23 @@ impl Board {
             hash: self.hash,
         });
 
+        let zobrist = get_zobrist();
+
+        if let Some(ep) = self.en_passant {
+            self.hash ^= zobrist.ep[(ep % 8) as usize];
+        }
+
+        self.hash ^= zobrist.side;
+
         self.en_passant = None;
         self.halfmove_clock += 1;
         self.side_to_move = 1 - self.side_to_move;
-        self.hash = self.compute_hash();
+
+        #[cfg(debug_assertions)]
+        {
+            let computed = self.compute_hash();
+            debug_assert_eq!(self.hash, computed, "Hash mismatch in make_null_move");
+        }
     }
 
     pub fn unmake_null_move(&mut self) {

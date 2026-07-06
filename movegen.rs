@@ -207,7 +207,7 @@ pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
                     moves.push(Move {
                         from_sq,
                         to_sq,
-                        promotion: Some(*p_piece),
+                        promotion: Some(*p_piece as u8),
                         is_capture: false,
                         is_en_passant: false,
                         is_double_push: false,
@@ -252,7 +252,7 @@ pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
                     moves.push(Move {
                         from_sq,
                         to_sq,
-                        promotion: Some(*p_piece),
+                        promotion: Some(*p_piece as u8),
                         is_capture: true,
                         is_en_passant: false,
                         is_double_push: false,

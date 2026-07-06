@@ -161,7 +161,7 @@ fn get_passed_pawn_masks_black() -> &'static [u64; 64] {
     })
 }
 
-pub fn evaluate(board: &Board, _use_mobility: bool) -> i32 {
+pub fn evaluate(board: &Board, use_mobility: bool) -> i32 {
     // Calculate game phase and check if it is a pawn ending
     let w_knights = board.pieces[crate::board::WHITE_KNIGHT].count_ones() as i32;
     let b_knights = board.pieces[crate::board::BLACK_KNIGHT].count_ones() as i32;
@@ -404,60 +404,62 @@ pub fn evaluate(board: &Board, _use_mobility: bool) -> i32 {
     }
 
     // 5. Fast Bitboard Mobility scoring
-    let tables = crate::movegen::get_move_tables();
-    let occupancy = board.occupied();
-    
-    // White mobility
-    let w_mobility_area = !board.occupied_white();
-    let mut w_mobility = 0_i32;
-    // Knights
-    for_each_square!(board.pieces[crate::board::WHITE_KNIGHT], sq, {
-        let attacks = tables.knight_attacks[sq as usize];
-        w_mobility += (attacks & w_mobility_area).count_ones() as i32 * 4;
-    });
-    // Bishops
-    for_each_square!(board.pieces[crate::board::WHITE_BISHOP], sq, {
-        let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, true);
-        w_mobility += (attacks & w_mobility_area).count_ones() as i32 * 3;
-    });
-    // Rooks
-    for_each_square!(board.pieces[crate::board::WHITE_ROOK], sq, {
-        let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, false);
-        w_mobility += (attacks & w_mobility_area).count_ones() as i32 * 2;
-    });
-    // Queens
-    for_each_square!(board.pieces[crate::board::WHITE_QUEEN], sq, {
-        let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, true) | 
-                      crate::movegen::get_sliding_attacks(sq, occupancy, false);
-        w_mobility += (attacks & w_mobility_area).count_ones() as i32 * 1;
-    });
-    white_score += w_mobility;
+    if use_mobility {
+        let tables = crate::movegen::get_move_tables();
+        let occupancy = board.occupied();
+        
+        // White mobility
+        let w_mobility_area = !board.occupied_white();
+        let mut w_mobility = 0_i32;
+        // Knights
+        for_each_square!(board.pieces[crate::board::WHITE_KNIGHT], sq, {
+            let attacks = tables.knight_attacks[sq as usize];
+            w_mobility += (attacks & w_mobility_area).count_ones() as i32 * 4;
+        });
+        // Bishops
+        for_each_square!(board.pieces[crate::board::WHITE_BISHOP], sq, {
+            let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, true);
+            w_mobility += (attacks & w_mobility_area).count_ones() as i32 * 3;
+        });
+        // Rooks
+        for_each_square!(board.pieces[crate::board::WHITE_ROOK], sq, {
+            let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, false);
+            w_mobility += (attacks & w_mobility_area).count_ones() as i32 * 2;
+        });
+        // Queens
+        for_each_square!(board.pieces[crate::board::WHITE_QUEEN], sq, {
+            let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, true) | 
+                          crate::movegen::get_sliding_attacks(sq, occupancy, false);
+            w_mobility += (attacks & w_mobility_area).count_ones() as i32 * 1;
+        });
+        white_score += w_mobility;
 
-    // Black mobility
-    let b_mobility_area = !board.occupied_black();
-    let mut b_mobility = 0_i32;
-    // Knights
-    for_each_square!(board.pieces[crate::board::BLACK_KNIGHT], sq, {
-        let attacks = tables.knight_attacks[sq as usize];
-        b_mobility += (attacks & b_mobility_area).count_ones() as i32 * 4;
-    });
-    // Bishops
-    for_each_square!(board.pieces[crate::board::BLACK_BISHOP], sq, {
-        let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, true);
-        b_mobility += (attacks & b_mobility_area).count_ones() as i32 * 3;
-    });
-    // Rooks
-    for_each_square!(board.pieces[crate::board::BLACK_ROOK], sq, {
-        let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, false);
-        b_mobility += (attacks & b_mobility_area).count_ones() as i32 * 2;
-    });
-    // Queens
-    for_each_square!(board.pieces[crate::board::BLACK_QUEEN], sq, {
-        let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, true) | 
-                      crate::movegen::get_sliding_attacks(sq, occupancy, false);
-        b_mobility += (attacks & b_mobility_area).count_ones() as i32 * 1;
-    });
-    black_score += b_mobility;
+        // Black mobility
+        let b_mobility_area = !board.occupied_black();
+        let mut b_mobility = 0_i32;
+        // Knights
+        for_each_square!(board.pieces[crate::board::BLACK_KNIGHT], sq, {
+            let attacks = tables.knight_attacks[sq as usize];
+            b_mobility += (attacks & b_mobility_area).count_ones() as i32 * 4;
+        });
+        // Bishops
+        for_each_square!(board.pieces[crate::board::BLACK_BISHOP], sq, {
+            let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, true);
+            b_mobility += (attacks & b_mobility_area).count_ones() as i32 * 3;
+        });
+        // Rooks
+        for_each_square!(board.pieces[crate::board::BLACK_ROOK], sq, {
+            let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, false);
+            b_mobility += (attacks & b_mobility_area).count_ones() as i32 * 2;
+        });
+        // Queens
+        for_each_square!(board.pieces[crate::board::BLACK_QUEEN], sq, {
+            let attacks = crate::movegen::get_sliding_attacks(sq, occupancy, true) | 
+                          crate::movegen::get_sliding_attacks(sq, occupancy, false);
+            b_mobility += (attacks & b_mobility_area).count_ones() as i32 * 1;
+        });
+        black_score += b_mobility;
+    }
 
     // Base score relative to side to move
     if board.side_to_move == WHITE {
