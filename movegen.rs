@@ -11,52 +11,29 @@ use crate::board::{
 };
 
 pub struct MoveTables {
-    pub ray_squares: [[Vec<u8>; 8]; 64],
     pub knight_attacks: [u64; 64],
     pub king_attacks: [u64; 64],
     pub pawn_attacks: [[u64; 64]; 2],
+    
+    // PEXT/Magic Tables
+    pub bishop_masks: [u64; 64],
+    pub bishop_offsets: [usize; 64],
+    pub bishop_attacks: Vec<u64>,
+    
+    pub rook_masks: [u64; 64],
+    pub rook_offsets: [usize; 64],
+    pub rook_attacks: Vec<u64>,
 }
 
 pub static MOVE_TABLES: OnceLock<MoveTables> = OnceLock::new();
 
 pub fn get_move_tables() -> &'static MoveTables {
     MOVE_TABLES.get_or_init(|| {
-        let mut ray_squares: [[Vec<u8>; 8]; 64] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| Vec::new())
-        });
         let mut knight_attacks = [0_u64; 64];
         let mut king_attacks = [0_u64; 64];
         let mut pawn_attacks = [[0_u64; 64]; 2];
 
-        // 1. Rays
-        let dirs = [
-            (1, 1),   // NE (0)
-            (-1, 1),  // NW (1)
-            (-1, -1), // SW (2)
-            (1, -1),  // SE (3)
-            (0, 1),   // N  (4)
-            (0, -1),  // S  (5)
-            (1, 0),   // E  (6)
-            (-1, 0)   // W  (7)
-        ];
-        for sq in 0..64 {
-            let file = sq % 8;
-            let rank = sq / 8;
-            for (d_idx, &(df, dr)) in dirs.iter().enumerate() {
-                let mut cur_f = file as i32 + df;
-                let mut cur_r = rank as i32 + dr;
-                let mut ray = Vec::new();
-                while (0..8).contains(&cur_f) && (0..8).contains(&cur_r) {
-                    let target_sq = (cur_r * 8 + cur_f) as u8;
-                    ray.push(target_sq);
-                    cur_f += df;
-                    cur_r += dr;
-                }
-                ray_squares[sq][d_idx] = ray;
-            }
-        }
-
-        // 2. Knight attacks
+        // 1. Knight attacks
         let knight_offsets = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)];
         for sq in 0..64 {
             let file = sq % 8;
@@ -70,7 +47,7 @@ pub fn get_move_tables() -> &'static MoveTables {
             }
         }
 
-        // 3. King attacks
+        // 2. King attacks
         let king_offsets = [(1, 1), (1, 0), (1, -1), (0, 1), (0, -1), (-1, 1), (-1, 0), (-1, -1)];
         for sq in 0..64 {
             let file = sq % 8;
@@ -84,7 +61,7 @@ pub fn get_move_tables() -> &'static MoveTables {
             }
         }
 
-        // 4. Pawn attacks
+        // 3. Pawn attacks
         for sq in 0..64 {
             let file = sq % 8;
             let rank = sq / 8;
@@ -106,8 +83,177 @@ pub fn get_move_tables() -> &'static MoveTables {
             }
         }
 
-        MoveTables { ray_squares, knight_attacks, king_attacks, pawn_attacks }
+        // 4. PEXT/Magic Tables Generation
+        let mut bishop_masks = [0_u64; 64];
+        let mut bishop_offsets = [0_usize; 64];
+        let mut bishop_attacks = Vec::new();
+        let mut b_offset = 0;
+        for sq in 0..64 {
+            let mask = compute_bishop_mask(sq);
+            bishop_masks[sq] = mask;
+            bishop_offsets[sq] = b_offset;
+            let size = 1 << mask.count_ones();
+            b_offset += size;
+        }
+        bishop_attacks.resize(b_offset, 0);
+        for sq in 0..64 {
+            let mask = bishop_masks[sq];
+            let offset = bishop_offsets[sq];
+            let num_bits = mask.count_ones();
+            for i in 0..(1 << num_bits) {
+                let blockers = scatter_bits(i as u64, mask);
+                let attacks = compute_bishop_attacks(sq, blockers);
+                bishop_attacks[offset + i] = attacks;
+            }
+        }
+
+        let mut rook_masks = [0_u64; 64];
+        let mut rook_offsets = [0_usize; 64];
+        let mut rook_attacks = Vec::new();
+        let mut r_offset = 0;
+        for sq in 0..64 {
+            let mask = compute_rook_mask(sq);
+            rook_masks[sq] = mask;
+            rook_offsets[sq] = r_offset;
+            let size = 1 << mask.count_ones();
+            r_offset += size;
+        }
+        rook_attacks.resize(r_offset, 0);
+        for sq in 0..64 {
+            let mask = rook_masks[sq];
+            let offset = rook_offsets[sq];
+            let num_bits = mask.count_ones();
+            for i in 0..(1 << num_bits) {
+                let blockers = scatter_bits(i as u64, mask);
+                let attacks = compute_rook_attacks(sq, blockers);
+                rook_attacks[offset + i] = attacks;
+            }
+        }
+
+        MoveTables {
+            knight_attacks,
+            king_attacks,
+            pawn_attacks,
+            bishop_masks,
+            bishop_offsets,
+            bishop_attacks,
+            rook_masks,
+            rook_offsets,
+            rook_attacks,
+        }
     })
+}
+
+fn compute_bishop_mask(sq: usize) -> u64 {
+    let mut mask = 0_u64;
+    let r = (sq / 8) as i32;
+    let f = (sq % 8) as i32;
+    let dirs = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+    for &(dr, df) in &dirs {
+        let mut cur_r = r + dr;
+        let mut cur_f = f + df;
+        while cur_r > 0 && cur_r < 7 && cur_f > 0 && cur_f < 7 {
+            mask |= 1_u64 << (cur_r * 8 + cur_f);
+            cur_r += dr;
+            cur_f += df;
+        }
+    }
+    mask
+}
+
+fn compute_bishop_attacks(sq: usize, blockers: u64) -> u64 {
+    let mut attacks = 0_u64;
+    let r = (sq / 8) as i32;
+    let f = (sq % 8) as i32;
+    let dirs = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+    for &(dr, df) in &dirs {
+        let mut cur_r = r + dr;
+        let mut cur_f = f + df;
+        while cur_r >= 0 && cur_r < 8 && cur_f >= 0 && cur_f < 8 {
+            let target_sq = (cur_r * 8 + cur_f) as u8;
+            attacks |= 1_u64 << target_sq;
+            if (blockers & (1_u64 << target_sq)) != 0 {
+                break;
+            }
+            cur_r += dr;
+            cur_f += df;
+        }
+    }
+    attacks
+}
+
+fn compute_rook_mask(sq: usize) -> u64 {
+    let mut mask = 0_u64;
+    let r = (sq / 8) as i32;
+    let f = (sq % 8) as i32;
+    for rank in 1..7 {
+        if rank != r {
+            mask |= 1_u64 << (rank * 8 + f);
+        }
+    }
+    for file in 1..7 {
+        if file != f {
+            mask |= 1_u64 << (r * 8 + file);
+        }
+    }
+    mask
+}
+
+fn compute_rook_attacks(sq: usize, blockers: u64) -> u64 {
+    let mut attacks = 0_u64;
+    let r = (sq / 8) as i32;
+    let f = (sq % 8) as i32;
+    let dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+    for &(dr, df) in &dirs {
+        let mut cur_r = r + dr;
+        let mut cur_f = f + df;
+        while cur_r >= 0 && cur_r < 8 && cur_f >= 0 && cur_f < 8 {
+            let target_sq = (cur_r * 8 + cur_f) as u8;
+            attacks |= 1_u64 << target_sq;
+            if (blockers & (1_u64 << target_sq)) != 0 {
+                break;
+            }
+            cur_r += dr;
+            cur_f += df;
+        }
+    }
+    attacks
+}
+
+fn scatter_bits(mut index: u64, mut mask: u64) -> u64 {
+    let mut blockers = 0_u64;
+    while mask != 0 {
+        let sq = mask.trailing_zeros();
+        if (index & 1) != 0 {
+            blockers |= 1_u64 << sq;
+        }
+        index >>= 1;
+        mask &= mask - 1;
+    }
+    blockers
+}
+
+#[inline(always)]
+pub fn pext(val: u64, mask: u64) -> u64 {
+    #[cfg(target_feature = "bmi2")]
+    {
+        unsafe { std::arch::x86_64::_pext_u64(val, mask) }
+    }
+    #[cfg(not(target_feature = "bmi2"))]
+    {
+        let mut res = 0;
+        let mut temp_mask = mask;
+        let mut shift = 0;
+        while temp_mask != 0 {
+            let lsb = temp_mask & temp_mask.wrapping_neg();
+            if (val & lsb) != 0 {
+                res |= 1 << shift;
+            }
+            shift += 1;
+            temp_mask &= temp_mask - 1;
+        }
+        res
+    }
 }
 
 #[inline(always)]
@@ -123,17 +269,17 @@ pub fn get_squares(mut bb: u64) -> Vec<u8> {
 
 pub fn get_sliding_attacks(sq: u8, occupied: u64, is_bishop: bool) -> u64 {
     let tables = get_move_tables();
-    let mut attacks = 0_u64;
-    let directions = if is_bishop { &[0, 1, 2, 3] } else { &[4, 5, 6, 7] };
-    for &d in directions {
-        for &target_sq in &tables.ray_squares[sq as usize][d] {
-            attacks |= 1_u64 << target_sq;
-            if (occupied & (1_u64 << target_sq)) != 0 {
-                break;
-            }
-        }
+    if is_bishop {
+        let mask = tables.bishop_masks[sq as usize];
+        let offset = tables.bishop_offsets[sq as usize];
+        let index = pext(occupied, mask) as usize;
+        tables.bishop_attacks[offset + index]
+    } else {
+        let mask = tables.rook_masks[sq as usize];
+        let offset = tables.rook_offsets[sq as usize];
+        let index = pext(occupied, mask) as usize;
+        tables.rook_attacks[offset + index]
     }
-    attacks
 }
 
 pub fn is_square_attacked(board: &Board, sq: u8, attacker_color: usize) -> bool {

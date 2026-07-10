@@ -177,6 +177,7 @@ pub struct HistoryEntry {
     pub captured_piece: Option<usize>,
     pub moving_piece: usize,
     pub hash: u64,
+    pub last_move: Option<Move>,
 }
 
 #[derive(Clone)]
@@ -463,6 +464,7 @@ impl Board {
             captured_piece,
             moving_piece,
             hash: self.hash,
+            last_move: Some(m),
         });
 
         let zobrist = get_zobrist();
@@ -671,6 +673,7 @@ impl Board {
             captured_piece: None,
             moving_piece: 99, // dummy
             hash: self.hash,
+            last_move: None,
         });
 
         let zobrist = get_zobrist();

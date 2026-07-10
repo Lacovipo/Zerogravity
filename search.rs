@@ -101,6 +101,7 @@ pub struct SearchState<'a> {
     pub is_main: bool,
     pub nodes_searched: u64,
     pub killer_moves: [[Option<Move>; 2]; MAX_PLY],
+    pub counter_moves: [[Option<Move>; 64]; 12],
     pub history_table: &'a mut [[i32; 64]; 64],
     pub lmr_table: [[i32; 64]; 64],
     pub eval_history: [i32; MAX_PLY],
@@ -146,7 +147,7 @@ fn has_non_pawns(board: &Board, color: usize) -> bool {
     }
 }
 
-pub fn order_moves(board: &Board, moves: &mut [Move], tt_move: Option<Move>, killer_1: Option<Move>, killer_2: Option<Move>, history_table: &[[i32; 64]; 64]) {
+pub fn order_moves(board: &Board, moves: &mut [Move], tt_move: Option<Move>, killer_1: Option<Move>, killer_2: Option<Move>, counter_move: Option<Move>, history_table: &[[i32; 64]; 64]) {
     let score_move = |m: &Move| -> i32 {
         if let Some(tt_m) = tt_move {
             if m.from_sq == tt_m.from_sq && m.to_sq == tt_m.to_sq && m.promotion == tt_m.promotion {
@@ -169,6 +170,11 @@ pub fn order_moves(board: &Board, moves: &mut [Move], tt_move: Option<Move>, kil
         if let Some(kill_m) = killer_1 {
             if m.from_sq == kill_m.from_sq && m.to_sq == kill_m.to_sq && m.promotion == kill_m.promotion {
                 return 85000;
+            }
+        }
+        if let Some(counter_m) = counter_move {
+            if m.from_sq == counter_m.from_sq && m.to_sq == counter_m.to_sq && m.promotion == counter_m.promotion {
+                return 78000;
             }
         }
         if let Some(kill_m) = killer_2 {
@@ -229,7 +235,7 @@ pub fn quiescence(board: &mut Board, mut alpha: i32, beta: i32, ply: i32, state:
         return -MATE_SCORE + ply;
     }
 
-    order_moves(board, &mut quiesce_moves, None, None, None, &state.history_table);
+    order_moves(board, &mut quiesce_moves, None, None, None, None, &state.history_table);
 
     for m in quiesce_moves {
         board.make_move(m);
@@ -251,7 +257,7 @@ pub fn quiescence(board: &mut Board, mut alpha: i32, beta: i32, ply: i32, state:
     alpha
 }
 
-pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: usize, state: &mut SearchState) -> i32 {
+pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: usize, exclude_move: Option<Move>, state: &mut SearchState) -> i32 {
     if ply >= MAX_PLY - 1 {
         return evaluate(board, false);
     }
@@ -303,7 +309,7 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
     } else {
         false
     };
-    let extension = if in_check && ply < MAX_PLY - 2 { 1 } else { 0 };
+    let mut extension = if in_check && ply < MAX_PLY - 2 { 1 } else { 0 };
 
     // 2. Transposition Table Lookup
     let alpha_orig = alpha;
@@ -326,6 +332,28 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
         }
     }
 
+    // Singular Extension Check
+    let tt_best_move = tt_entry.and_then(|e| e.best_move);
+    if depth >= 7 && ply < MAX_PLY - 2 && extension == 0 && exclude_move.is_none() {
+        if let Some(entry) = tt_entry {
+            if entry.depth >= depth - 3 && entry.flag != ALPHA && entry.val.abs() < MATE_SCORE - 100 {
+                if let Some(tt_m) = entry.best_move {
+                    let tt_value = entry.val;
+                    let margin = 3 * depth;
+                    let singular_beta = tt_value - margin;
+                    let singular_depth = (depth - 1) / 2;
+                    
+                    if singular_depth > 0 {
+                        let val = negamax(board, singular_depth, singular_beta - 1, singular_beta, ply, Some(tt_m), state);
+                        if val < singular_beta {
+                            extension = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 2.5 Static Null Move Pruning / Reverse Futility Pruning (RFP)
     if depth <= 3 && !in_check && ply > 0 {
         let margin = if improving { depth * 80 } else { depth * 120 };
@@ -338,7 +366,7 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
     if depth >= 3 && !in_check && static_eval >= beta && has_non_pawns(board, us) && ply > 0 {
         board.make_null_move();
         let reduction = 3 + depth / 6;
-        let val = -negamax(board, depth - 1 - reduction, -beta, -beta + 1, ply + 1, state);
+        let val = -negamax(board, depth - 1 - reduction, -beta, -beta + 1, ply + 1, None, state);
         board.unmake_null_move();
 
         if val >= beta {
@@ -361,13 +389,25 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
         return 0;
     }
 
-    let tt_best_move = tt_entry.and_then(|e| e.best_move);
     let (killer_1, killer_2) = if ply < MAX_PLY {
         (state.killer_moves[ply][0], state.killer_moves[ply][1])
     } else {
         (None, None)
     };
-    order_moves(board, &mut moves, tt_best_move, killer_1, killer_2, &state.history_table);
+
+    let counter_move = if board.history.len() >= 1 {
+        let last_hist = board.history.last().unwrap();
+        if last_hist.moving_piece < 12 && last_hist.last_move.is_some() {
+            let prev_m = last_hist.last_move.unwrap();
+            state.counter_moves[last_hist.moving_piece][prev_m.to_sq as usize]
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    order_moves(board, &mut moves, tt_best_move, killer_1, killer_2, counter_move, &state.history_table);
 
     let mut best_val = -INF;
     let mut best_move = None;
@@ -383,6 +423,12 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
     }
 
     for &m in &moves {
+        if let Some(ex_m) = exclude_move {
+            if m.from_sq == ex_m.from_sq && m.to_sq == ex_m.to_sq && m.promotion == ex_m.promotion {
+                continue;
+            }
+        }
+
         let is_quiet = !m.is_capture && m.promotion.is_none();
         if is_quiet {
             quiet_moves_searched += 1;
@@ -415,7 +461,7 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
 
         let mut val;
         if moves_searched == 1 {
-            val = -negamax(board, depth - 1 + extension, -beta, -alpha, ply + 1, state);
+            val = -negamax(board, depth - 1 + extension, -beta, -alpha, ply + 1, None, state);
         } else {
             let mut lmr = false;
             if depth >= 3 && moves_searched >= 4 && !m.is_capture && m.promotion.is_none() && !in_check && !is_check {
@@ -434,7 +480,7 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
                 if reduction >= 1 {
                     lmr = true;
                     let reduced_depth = (depth - 1 - reduction).max(1);
-                    val = -negamax(board, reduced_depth, -alpha - 1, -alpha, ply + 1, state);
+                    val = -negamax(board, reduced_depth, -alpha - 1, -alpha, ply + 1, None, state);
                 } else {
                     val = -INF;
                 }
@@ -444,11 +490,11 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
 
             let mut pvs_val = val;
             if !lmr || pvs_val > alpha {
-                pvs_val = -negamax(board, depth - 1 + extension, -alpha - 1, -alpha, ply + 1, state);
+                pvs_val = -negamax(board, depth - 1 + extension, -alpha - 1, -alpha, ply + 1, None, state);
             }
 
             if pvs_val > alpha && pvs_val < beta {
-                val = -negamax(board, depth - 1 + extension, -beta, -alpha, ply + 1, state);
+                val = -negamax(board, depth - 1 + extension, -beta, -alpha, ply + 1, None, state);
             } else {
                 val = pvs_val;
             }
@@ -477,6 +523,15 @@ pub fn negamax(board: &mut Board, depth: i32, mut alpha: i32, beta: i32, ply: us
                     state.killer_moves[ply][0] = Some(m);
                 }
                 state.history_table[m.from_sq as usize][m.to_sq as usize] += depth * depth;
+
+                // Update countermove history
+                if board.history.len() >= 1 {
+                    let last_hist = board.history.last().unwrap();
+                    if last_hist.moving_piece < 12 && last_hist.last_move.is_some() {
+                        let prev_m = last_hist.last_move.unwrap();
+                        state.counter_moves[last_hist.moving_piece][prev_m.to_sq as usize] = Some(m);
+                    }
+                }
 
                 // Penalize previously searched quiet moves
                 for &prev_m in &moves {
@@ -573,6 +628,7 @@ pub fn search(
                     is_main: false,
                     nodes_searched: 0,
                     killer_moves: [[None; 2]; MAX_PLY],
+                    counter_moves: [[None; 64]; 12],
                     history_table: &mut local_history,
                     lmr_table,
                     eval_history: [0; MAX_PLY],
@@ -584,7 +640,7 @@ pub fn search(
                         break;
                     }
                     let d = depth + (thread_id as i32 % 2);
-                    negamax(&mut local_board, d, -INF, INF, 0, &mut local_state);
+                    negamax(&mut local_board, d, -INF, INF, 0, None, &mut local_state);
                 }
             });
         }
@@ -597,6 +653,7 @@ pub fn search(
             is_main: true,
             nodes_searched: 0,
             killer_moves: [[None; 2]; MAX_PLY],
+            counter_moves: [[None; 64]; 12],
             history_table,
             lmr_table,
             eval_history: [0; MAX_PLY],
@@ -614,7 +671,7 @@ pub fn search(
                 let mut beta = previous_score + margin;
 
                 loop {
-                    score = negamax(board, depth, alpha, beta, 0, &mut state);
+                    score = negamax(board, depth, alpha, beta, 0, None, &mut state);
                     if state.stop_search.load(Ordering::Relaxed) {
                         break;
                     }
@@ -630,7 +687,7 @@ pub fn search(
                     }
                 }
             } else {
-                score = negamax(board, depth, -INF, INF, 0, &mut state);
+                score = negamax(board, depth, -INF, INF, 0, None, &mut state);
             }
 
             if state.stop_search.load(Ordering::Relaxed) {
