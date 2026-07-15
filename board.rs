@@ -380,6 +380,27 @@ impl Board {
                 self.fullmove_number = fm;
             }
         }
+        // Sanitize castling rights based on starting positions of King and Rooks
+        if (self.castling_rights & CASTLE_WHITE_OO) != 0 {
+            if (self.pieces[WHITE_KING] & (1_u64 << 4)) == 0 || (self.pieces[WHITE_ROOK] & (1_u64 << 7)) == 0 {
+                self.castling_rights &= !CASTLE_WHITE_OO;
+            }
+        }
+        if (self.castling_rights & CASTLE_WHITE_OOO) != 0 {
+            if (self.pieces[WHITE_KING] & (1_u64 << 4)) == 0 || (self.pieces[WHITE_ROOK] & (1_u64 << 0)) == 0 {
+                self.castling_rights &= !CASTLE_WHITE_OOO;
+            }
+        }
+        if (self.castling_rights & CASTLE_BLACK_OO) != 0 {
+            if (self.pieces[BLACK_KING] & (1_u64 << 60)) == 0 || (self.pieces[BLACK_ROOK] & (1_u64 << 63)) == 0 {
+                self.castling_rights &= !CASTLE_BLACK_OO;
+            }
+        }
+        if (self.castling_rights & CASTLE_BLACK_OOO) != 0 {
+            if (self.pieces[BLACK_KING] & (1_u64 << 60)) == 0 || (self.pieces[BLACK_ROOK] & (1_u64 << 56)) == 0 {
+                self.castling_rights &= !CASTLE_BLACK_OOO;
+            }
+        }
 
         self.hash = self.compute_hash();
     }

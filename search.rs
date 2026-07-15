@@ -32,27 +32,24 @@ pub struct TTEntry {
 }
 
 pub struct TranspositionTable {
-    pub entries: Vec<std::cell::UnsafeCell<Option<TTEntry>>>,
+    pub entries: Vec<std::sync::Mutex<Option<TTEntry>>>,
 }
-
-unsafe impl Sync for TranspositionTable {}
-unsafe impl Send for TranspositionTable {}
 
 impl TranspositionTable {
     pub fn new(megabytes: usize) -> Self {
-        let size = (megabytes * 1024 * 1024) / std::mem::size_of::<std::cell::UnsafeCell<Option<TTEntry>>>();
+        let size = (megabytes * 1024 * 1024) / std::mem::size_of::<std::sync::Mutex<Option<TTEntry>>>();
         let size = size.next_power_of_two();
         let mut entries = Vec::with_capacity(size);
         for _ in 0..size {
-            entries.push(std::cell::UnsafeCell::new(None));
+            entries.push(std::sync::Mutex::new(None));
         }
         TranspositionTable { entries }
     }
 
     pub fn get(&self, hash: u64) -> Option<TTEntry> {
         let index = (hash as usize) & (self.entries.len() - 1);
-        unsafe {
-            if let Some(entry) = *self.entries[index].get() {
+        if let Ok(guard) = self.entries[index].lock() {
+            if let Some(entry) = *guard {
                 if entry.hash == hash {
                     return Some(entry);
                 }
@@ -63,14 +60,13 @@ impl TranspositionTable {
 
     pub fn store(&self, hash: u64, depth: i32, flag: u8, val: i32, best_move: Option<Move>) {
         let index = (hash as usize) & (self.entries.len() - 1);
-        unsafe {
-            let entry_ptr = self.entries[index].get();
-            let replace = match *entry_ptr {
+        if let Ok(mut guard) = self.entries[index].lock() {
+            let replace = match *guard {
                 None => true,
                 Some(entry) => entry.depth <= depth,
             };
             if replace {
-                *entry_ptr = Some(TTEntry {
+                *guard = Some(TTEntry {
                     hash,
                     depth,
                     flag,
@@ -83,8 +79,8 @@ impl TranspositionTable {
 
     pub fn clear(&self) {
         for entry in self.entries.iter() {
-            unsafe {
-                *entry.get() = None;
+            if let Ok(mut guard) = entry.lock() {
+                *guard = None;
             }
         }
     }

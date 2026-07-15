@@ -139,7 +139,7 @@ fn main() {
     let mut history_table = [[0_i32; 64]; 64];
     let mut num_threads = 1;
 
-    eprintln!("ZeroGravity Chess Engine v1.19.0 (Rust) ready.");
+    eprintln!("ZeroGravity Chess Engine v1.20.0 (Rust) ready.");
 
     // Spawn stdin reader thread to communicate via channel
     let (tx, rx) = std::sync::mpsc::channel();
@@ -173,7 +173,7 @@ fn main() {
 
         match cmd {
             "uci" => {
-                println!("id name ZeroGravity v1.19.0");
+                println!("id name ZeroGravity v1.20.0");
                 println!("id author Antigravity");
                 println!("option name Hash type spin default 16 min 1 max 1024");
                 println!("option name Threads type spin default 1 min 1 max 128");
@@ -214,8 +214,6 @@ fn main() {
             }
             "go" => {
                 let (depth, search_time) = parse_go(&parts, &board);
-                // Clear any leftover messages from the channel (e.g. stop from previous searches)
-                while rx.0.try_recv().is_ok() {}
 
                 let best = search(&mut board, depth, search_time, &tt, &mut history_table, &rx, num_threads);
                 if let Some(m) = best {

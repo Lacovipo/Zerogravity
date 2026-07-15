@@ -478,7 +478,7 @@ pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
         // Castling
         if us == WHITE {
             // White OO
-            if (board.castling_rights & CASTLE_WHITE_OO) != 0 {
+            if (board.castling_rights & CASTLE_WHITE_OO) != 0 && (board.pieces[WHITE_ROOK] & (1_u64 << 7)) != 0 {
                 if (occupied & ((1_u64 << 5) | (1_u64 << 6))) == 0 {
                     if !is_square_attacked(board, 4, BLACK) &&
                        !is_square_attacked(board, 5, BLACK) &&
@@ -496,7 +496,7 @@ pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
                 }
             }
             // White OOO
-            if (board.castling_rights & CASTLE_WHITE_OOO) != 0 {
+            if (board.castling_rights & CASTLE_WHITE_OOO) != 0 && (board.pieces[WHITE_ROOK] & (1_u64 << 0)) != 0 {
                 if (occupied & ((1_u64 << 3) | (1_u64 << 2) | (1_u64 << 1))) == 0 {
                     if !is_square_attacked(board, 4, BLACK) &&
                        !is_square_attacked(board, 3, BLACK) &&
@@ -515,7 +515,7 @@ pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
             }
         } else {
             // Black OO
-            if (board.castling_rights & CASTLE_BLACK_OO) != 0 {
+            if (board.castling_rights & CASTLE_BLACK_OO) != 0 && (board.pieces[BLACK_ROOK] & (1_u64 << 63)) != 0 {
                 if (occupied & ((1_u64 << 61) | (1_u64 << 62))) == 0 {
                     if !is_square_attacked(board, 60, WHITE) &&
                        !is_square_attacked(board, 61, WHITE) &&
@@ -533,7 +533,7 @@ pub fn generate_pseudo_legal_moves(board: &Board) -> Vec<Move> {
                 }
             }
             // Black OOO
-            if (board.castling_rights & CASTLE_BLACK_OOO) != 0 {
+            if (board.castling_rights & CASTLE_BLACK_OOO) != 0 && (board.pieces[BLACK_ROOK] & (1_u64 << 56)) != 0 {
                 if (occupied & ((1_u64 << 59) | (1_u64 << 58) | (1_u64 << 57))) == 0 {
                     if !is_square_attacked(board, 60, WHITE) &&
                        !is_square_attacked(board, 59, WHITE) &&

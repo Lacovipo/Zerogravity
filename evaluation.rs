@@ -308,8 +308,8 @@ pub fn evaluate(board: &Board, use_mobility: bool) -> i32 {
 
             // Protected passed pawn check
             let f = sq % 8;
-            let left_defender = f > 0 && (w_pawns & (1_u64 << (sq - 9))) != 0;
-            let right_defender = f < 7 && (w_pawns & (1_u64 << (sq - 7))) != 0;
+            let left_defender = f > 0 && sq >= 9 && (w_pawns & (1_u64 << (sq - 9))) != 0;
+            let right_defender = f < 7 && sq >= 7 && (w_pawns & (1_u64 << (sq - 7))) != 0;
             if left_defender || right_defender {
                 bonus += (40 * phase + 80 * (24 - phase)) / 24;
             }
@@ -329,8 +329,8 @@ pub fn evaluate(board: &Board, use_mobility: bool) -> i32 {
 
             // Protected passed pawn check
             let f = sq % 8;
-            let left_defender = f > 0 && (b_pawns & (1_u64 << (sq + 7))) != 0;
-            let right_defender = f < 7 && (b_pawns & (1_u64 << (sq + 9))) != 0;
+            let left_defender = f > 0 && sq <= 56 && (b_pawns & (1_u64 << (sq + 7))) != 0;
+            let right_defender = f < 7 && sq <= 54 && (b_pawns & (1_u64 << (sq + 9))) != 0;
             if left_defender || right_defender {
                 bonus += (40 * phase + 80 * (24 - phase)) / 24;
             }
@@ -469,10 +469,10 @@ pub fn evaluate(board: &Board, use_mobility: bool) -> i32 {
         let r = sq as usize / 8;
         if r >= 3 && r <= 5 && f >= 2 && f <= 5 {
             let mut supported = false;
-            if f > 0 && (w_pawns & (1 << (sq - 9))) != 0 {
+            if f > 0 && sq >= 9 && (w_pawns & (1_u64 << (sq - 9))) != 0 {
                 supported = true;
             }
-            if f < 7 && (w_pawns & (1 << (sq - 7))) != 0 {
+            if f < 7 && sq >= 7 && (w_pawns & (1_u64 << (sq - 7))) != 0 {
                 supported = true;
             }
             if supported {
@@ -488,10 +488,10 @@ pub fn evaluate(board: &Board, use_mobility: bool) -> i32 {
         let r = sq as usize / 8;
         if r >= 2 && r <= 4 && f >= 2 && f <= 5 {
             let mut supported = false;
-            if f > 0 && (b_pawns & (1 << (sq + 7))) != 0 {
+            if f > 0 && sq <= 56 && (b_pawns & (1_u64 << (sq + 7))) != 0 {
                 supported = true;
             }
-            if f < 7 && (b_pawns & (1 << (sq + 9))) != 0 {
+            if f < 7 && sq <= 54 && (b_pawns & (1_u64 << (sq + 9))) != 0 {
                 supported = true;
             }
             if supported {
@@ -665,8 +665,8 @@ fn evaluate_pawn_ending(board: &Board) -> i32 {
             let mut passed_bonus = 50 + 15 * r as i32;
 
             // Protected passed pawn check
-            let left_defender = f > 0 && (w_pawns & (1_u64 << (sq - 9))) != 0;
-            let right_defender = f < 7 && (w_pawns & (1_u64 << (sq - 7))) != 0;
+            let left_defender = f > 0 && sq >= 9 && (w_pawns & (1_u64 << (sq - 9))) != 0;
+            let right_defender = f < 7 && sq >= 7 && (w_pawns & (1_u64 << (sq - 7))) != 0;
             if left_defender || right_defender {
                 passed_bonus += 150;
             }
@@ -729,8 +729,8 @@ fn evaluate_pawn_ending(board: &Board) -> i32 {
             let mut passed_bonus = 50 + 15 * (7 - r as i32);
 
             // Protected passed pawn check
-            let left_defender = f > 0 && (b_pawns & (1_u64 << (sq + 7))) != 0;
-            let right_defender = f < 7 && (b_pawns & (1_u64 << (sq + 9))) != 0;
+            let left_defender = f > 0 && sq <= 56 && (b_pawns & (1_u64 << (sq + 7))) != 0;
+            let right_defender = f < 7 && sq <= 54 && (b_pawns & (1_u64 << (sq + 9))) != 0;
             if left_defender || right_defender {
                 passed_bonus += 150;
             }
@@ -930,8 +930,8 @@ pub fn print_eval(board: &Board) {
             w_passed += (mg_bonus * phase + eg_bonus * (24 - phase)) / 24;
 
             let f = sq % 8;
-            let left_defender = f > 0 && (w_pawns & (1_u64 << (sq - 9))) != 0;
-            let right_defender = f < 7 && (w_pawns & (1_u64 << (sq - 7))) != 0;
+            let left_defender = f > 0 && sq >= 9 && (w_pawns & (1_u64 << (sq - 9))) != 0;
+            let right_defender = f < 7 && sq >= 7 && (w_pawns & (1_u64 << (sq - 7))) != 0;
             if left_defender || right_defender {
                 w_passed += (40 * phase + 80 * (24 - phase)) / 24;
             }
@@ -949,8 +949,8 @@ pub fn print_eval(board: &Board) {
             b_passed += (mg_bonus * phase + eg_bonus * (24 - phase)) / 24;
 
             let f = sq % 8;
-            let left_defender = f > 0 && (b_pawns & (1_u64 << (sq + 7))) != 0;
-            let right_defender = f < 7 && (b_pawns & (1_u64 << (sq + 9))) != 0;
+            let left_defender = f > 0 && sq <= 56 && (b_pawns & (1_u64 << (sq + 7))) != 0;
+            let right_defender = f < 7 && sq <= 54 && (b_pawns & (1_u64 << (sq + 9))) != 0;
             if left_defender || right_defender {
                 b_passed += (40 * phase + 80 * (24 - phase)) / 24;
             }
@@ -1054,8 +1054,8 @@ pub fn print_eval(board: &Board) {
         let r = sq as usize / 8;
         if r >= 3 && r <= 5 && f >= 2 && f <= 5 {
             let mut supported = false;
-            if f > 0 && (w_pawns & (1 << (sq - 9))) != 0 { supported = true; }
-            if f < 7 && (w_pawns & (1 << (sq - 7))) != 0 { supported = true; }
+            if f > 0 && sq >= 9 && (w_pawns & (1_u64 << (sq - 9))) != 0 { supported = true; }
+            if f < 7 && sq >= 7 && (w_pawns & (1_u64 << (sq - 7))) != 0 { supported = true; }
             if supported { w_outpost += 25; }
         }
     });
@@ -1066,8 +1066,8 @@ pub fn print_eval(board: &Board) {
         let r = sq as usize / 8;
         if r >= 2 && r <= 4 && f >= 2 && f <= 5 {
             let mut supported = false;
-            if f > 0 && (b_pawns & (1 << (sq + 7))) != 0 { supported = true; }
-            if f < 7 && (b_pawns & (1 << (sq + 9))) != 0 { supported = true; }
+            if f > 0 && sq <= 56 && (b_pawns & (1_u64 << (sq + 7))) != 0 { supported = true; }
+            if f < 7 && sq <= 54 && (b_pawns & (1_u64 << (sq + 9))) != 0 { supported = true; }
             if supported { b_outpost += 25; }
         }
     });
